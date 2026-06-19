@@ -6,7 +6,7 @@ import random
 import chess  # Tracks real-time board positioning
 
 # --- CONFIGURATION ---
-TOKEN = os.environ.get("LICHESS_TOKEN", "lip_DroTWz1knn0uQnOFqCjK")
+TOKEN = os.environ.get("LICHESS_TOKEN", "YOUR_SECRET_TOKEN_HERE")
 BOT_USERNAME = "Studyloversz-bot"
 
 HEADERS = {
@@ -14,9 +14,8 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def make_lichess_move/make_lichess_move(game_id, move_str):
+def make_lichess_move(game_id, move_str):
     """Sends the calculated move back to Lichess."""
-    # FIXED: Added back the correct API path folder structure
     url = f"https://lichess.org/api/bot/game/{game_id}/move/{move_str}"
     try:
         response = requests.post(url, headers=HEADERS)
@@ -32,7 +31,6 @@ def get_engine_move(moves_list, bot_color):
     Queries the Lichess Cloud Database for Stockfish calculations.
     Introduces positional selection variance to simulate ~2000 Elo play.
     """
-    # 1. Synchronize the virtual board state
     board = chess.Board()
     for move in moves_list:
         try:
@@ -42,10 +40,8 @@ def get_engine_move(moves_list, bot_color):
             
     current_fen = board.fen()
     
-    # 2. Extract Stockfish analytics from the Cloud Eval API
-    # FIXED: Restored correct cloud eval path link
     cloud_url = "https://lichess.org/api/cloud-eval"
-    params = {"fen": current_fen, "multiPv": 3}  # Access top 3 best moves
+    params = {"fen": current_fen, "multiPv": 3}
     
     try:
         response = requests.get(cloud_url, params=params)
@@ -54,15 +50,13 @@ def get_engine_move(moves_list, bot_color):
             pvs = data.get("pvs", [])
             
             if pvs:
-                # 2000 Elo Random Variance Factor
                 dice_roll = random.random()
-                
                 if dice_roll > 0.85 and len(pvs) >= 3:
-                    chosen_pv = pvs[2]  # Your fix kept: 3rd best move
+                    chosen_pv = pvs[2]  # 3rd best move
                 elif dice_roll > 0.70 and len(pvs) >= 2:
-                    chosen_pv = pvs[1]  # Your fix kept: 2nd best move
+                    chosen_pv = pvs[1]  # 2nd best move
                 else:
-                    chosen_pv = pvs[0]  # Your fix kept: 1st best move
+                    chosen_pv = pvs[0]  # 1st best move
                     
                 best_move_line = chosen_pv.get("moves", "").split()
                 if best_move_line:
@@ -70,7 +64,6 @@ def get_engine_move(moves_list, bot_color):
     except Exception as e:
         print(f"Cloud Engine API communication error: {e}")
 
-    # Fallback Protocol: If the position is rare, play a random legal move
     legal_moves = list(board.legal_moves)
     if legal_moves:
         return random.choice(legal_moves).uci()
@@ -81,7 +74,6 @@ def play_game(game_id):
     """Handles individual game streams in an isolated background thread."""
     print(f"\n[GAME START] Active match initialized: {game_id}")
     
-    # FIXED: Restored correct game streaming sub-folders
     url = f"https://lichess.org/api/bot/game/stream/{game_id}"
     response = requests.get(url, headers=HEADERS, stream=True)
     
@@ -121,7 +113,6 @@ def play_game(game_id):
 def listen_to_events():
     """Main global event listener loop keeping the server 24/7 online."""
     print(f"Starting global event listener for user: {BOT_USERNAME}")
-    # FIXED: Restored main global streaming link path
     url = "https://lichess.org/api/stream/event"
     
     response = requests.get(url, headers=HEADERS, stream=True)
@@ -135,15 +126,12 @@ def listen_to_events():
         except Exception:
             continue
 
-        # Handle Incoming Challenges
         if event.get('type') == 'challenge':
             challenge_id = event['challenge']['id']
             print(f"[CHALLENGE] Received match request. Auto-accepting ID: {challenge_id}")
-            # FIXED: Restored challenge acceptance folder path
             accept_url = f"https://lichess.org/api/challenge/{challenge_id}/accept"
             requests.post(accept_url, headers=HEADERS)
 
-        # Handle Match Game Starts via Threads
         elif event.get('type') == 'gameStart':
             game_id = event['game']['id']
             game_thread = threading.Thread(target=play_game, args=(game_id,))
