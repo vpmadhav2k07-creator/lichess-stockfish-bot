@@ -1,3 +1,4 @@
 requests==2.32.3
-chess
+chess==1.10.0
+
 
