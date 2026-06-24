@@ -20,7 +20,7 @@ def send_chat_message(game_id, room, text):
     url = f"https://lichess.org/api/bot/game/{game_id}/chat"
     data = {"room": room, "text": text}
     try:
-        requests.post(url, headers=HEADERS, json=data)
+        requests.post(url, headers=HEADERS, json=data, timeout=5)
     except Exception as e:
         print(f"[{game_id}] Failed to send chat: {e}")
 
@@ -28,7 +28,7 @@ def make_lichess_move(game_id, move_str):
     """Sends the calculated move back to Lichess."""
     url = f"https://lichess.org/api/bot/game/{game_id}/move/{move_str}"
     try:
-        response = requests.post(url, headers=HEADERS)
+        response = requests.post(url, headers=HEADERS, timeout=5)
         if response.status_code == 200:
             print(f"[{game_id}] Played move: {move_str}")
         else:
@@ -37,10 +37,7 @@ def make_lichess_move(game_id, move_str):
         print(f"[{game_id}] Error posting move: {e}")
 
 def get_engine_move(moves_list):
-    """
-    Queries Lichess Cloud Database.
-    Safely indexes variables and uses random legal moves as fallback.
-    """
+    """Queries Lichess Cloud Database with fallback handling."""
     board = chess.Board()
     for move in moves_list:
         try:
@@ -59,12 +56,12 @@ def get_engine_move(moves_list):
     time.sleep(0.4) 
     
     try:
-        response = requests.get(cloud_url, params=params)
+        response = requests.get(cloud_url, params=params, timeout=5)
         if response.status_code == 200:
             data = response.json()
             pvs = data.get("pvs", [])
             
-            if pvs:
+            if pvs and isinstance(pvs, list):
                 dice_roll = random.random()
                 if dice_roll > 0.85 and len(pvs) >= 3:
                     chosen_pv = pvs[2]  # ~1800 Elo choice
@@ -73,16 +70,16 @@ def get_engine_move(moves_list):
                 else:
                     chosen_pv = pvs[0]  # Top line choice
                     
-                best_move_line = chosen_pv.get("moves", "").split()
-                if best_move_line:
-                    move_candidate = best_move_line[0]
-                    # Verify legality before returning
-                    if chess.Move.from_uci(move_candidate) in board.legal_moves:
-                        return move_candidate
+                if isinstance(chosen_pv, dict):
+                    best_move_line = chosen_pv.get("moves", "").split()
+                    if best_move_line:
+                        move_candidate = best_move_line[0]
+                        if chess.Move.from_uci(move_candidate) in board.legal_moves:
+                            return move_candidate
     except Exception as e:
         print(f"Cloud Engine API error: {e}")
 
-    # Safe dynamic fallback instead of a broken hardcoded string
+    # Safe dynamic fallback
     legal_moves = list(board.legal_moves)
     if legal_moves:
         return random.choice(legal_moves).uci()
@@ -95,7 +92,7 @@ def play_game(game_id):
     url = f"https://lichess.org/api/bot/game/stream/{game_id}"
     
     try:
-        response = requests.get(url, headers=HEADERS, stream=True)
+        response = requests.get(url, headers=HEADERS, stream=True, timeout=15)
     except Exception as e:
         print(f"[{game_id}] Stream connection failed: {e}")
         return
@@ -112,29 +109,29 @@ def play_game(game_id):
         except Exception:
             continue
 
-        # Stop thread if game status updates to finished/aborted/resigned
-        if game_event.get('type') == 'gameState' and game_event.get('status') != 'started':
-            print(f"[{game_id}] Match complete. Reason: {game_event.get('status')}")
-            send_chat_message(game_id, "player", "Good game! Thanks for playing.")
-            break
-
-        if game_event.get('type') == 'gameFull':
+        # 1. Safely extract the state dictionary depending on the event format
+        event_type = game_event.get('type')
+        if event_type == 'gameFull':
             white_id = game_event['white'].get('id', '').lower()
             bot_color = 'white' if white_id == BOT_USERNAME.lower() else 'black'
             state = game_event['state']
-            
-            if state.get('status') != 'started':
-                break
-                
-            if not sent_welcome:
-                send_chat_message(game_id, "player", "Hello! I am a Python bot simulating a 2000 Elo engine. Good luck!")
-                sent_welcome = True
-                
-        elif game_event.get('type') == 'gameState':
+        elif event_type == 'gameState':
             state = game_event
         else:
             continue
 
+        # 2. Terminate the thread immediately if the match is no longer active
+        if state.get('status') != 'started':
+            print(f"[{game_id}] Match complete. Reason: {state.get('status')}")
+            send_chat_message(game_id, "player", "Good game! Thanks for playing.")
+            break
+
+        # 3. Send welcome greeting only once upon joining
+        if event_type == 'gameFull' and not sent_welcome:
+            send_chat_message(game_id, "player", "Hello! I am a Python bot simulating a 2000 Elo engine. Good luck!")
+            sent_welcome = True
+
+        # 4. Parse the moves and calculate the bot's response
         moves_played = state['moves'].strip().split() if state['moves'].strip() else []
         total_moves = len(moves_played)
 
@@ -142,9 +139,7 @@ def play_game(game_id):
                       (total_moves % 2 != 0 and bot_color == 'black')
 
         if is_bot_turn:
-            # Simulate a realistic human thinking delay
             time.sleep(random.uniform(0.6, 1.8))
-            
             bot_move = get_engine_move(moves_played)
             if bot_move:
                 make_lichess_move(game_id, bot_move)
@@ -154,7 +149,7 @@ def listen_to_events():
     print(f"Starting global event listener for user: {BOT_USERNAME}")
     url = "https://lichess.org/api/stream/event"
     
-    response = requests.get(url, headers=HEADERS, stream=True)
+    response = requests.get(url, headers=HEADERS, stream=True, timeout=60)
     
     for line in response.iter_lines():
         if not line:
@@ -169,24 +164,22 @@ def listen_to_events():
             challenge_id = event['challenge']['id']
             variant = event['challenge']['variant']['key']
             
-            # Decline complex variants to avoid calculation crashes
             if variant != 'standard':
                 print(f"[CHALLENGE] Declining variant '{variant}' for ID: {challenge_id}")
-                requests.post(f"https://lichess.org/api/challenge/{challenge_id}/decline", headers=HEADERS)
+                requests.post(f"https://lichess.org/api/challenge/{challenge_id}/decline", headers=HEADERS, timeout=5)
                 continue
 
             print(f"[CHALLENGE] Auto-accepting ID: {challenge_id}")
             accept_url = f"https://lichess.org/api/challenge/{challenge_id}/accept"
-            requests.post(accept_url, headers=HEADERS)
+            requests.post(accept_url, headers=HEADERS, timeout=5)
 
         elif event.get('type') == 'gameStart':
-            game_id = event['game']['id']
+            game_id = event['game']['gameId']  
             game_thread = threading.Thread(target=play_game, args=(game_id,))
             game_thread.daemon = True
             game_thread.start()
 
 if __name__ == "__main__":
-    # Infinite outer recovery wrapper loop
     while True:
         try:
             listen_to_events()
