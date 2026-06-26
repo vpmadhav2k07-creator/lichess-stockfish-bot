@@ -63,7 +63,7 @@ def stockfish_worker():
         return
 
     try:
-        # FIXED: Clean Direct engine process invocation to completely bypass class namespace errors
+        # BYPASS: Directly import and use popen_uci to avoid environment namespace errors
         from chess.engine import popen_uci
         engine = popen_uci(resolved_path)
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
@@ -89,27 +89,26 @@ def stockfish_worker():
 
             best_move = None
             
-            # Use engine.analyse with multipv safely
+            # Request multi-pv analysis safely
             result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
 
-            # FIXED: Corrected 16-space alignment for the evaluation block
             if isinstance(result, list) and len(result) > 0:
                 dice_roll = random.random()
                 
-                # 1. 35% chance to try to play the 2nd best move option if it exists
+                # 1. 35% chance to play the 2nd best move option if it exists
                 if len(result) > 1 and dice_roll > 0.65:
-                    info_dict = result[1]
+                    info_dict = result[1] # FIXED: Pull the dictionary from the 2nd index
                     if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
-                        best_move = info_dict["pv"][0]
+                        best_move = info_dict["pv"][0] # FIXED: Extract the first Move object
                         print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
-                # 2. Fallback to top choice if 2nd option wasn't rolled or didn't exist
+                # 2. Fallback to top choice if 2nd option wasn't chosen or didn't exist
                 if not best_move:
-                    info_dict = result[0]
+                    info_dict = result[0] # FIXED: Pull the dictionary from the 1st index
                     if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
-                        best_move = info_dict["pv"][0]
+                        best_move = info_dict["pv"][0] # FIXED: Extract the first Move object
 
-                        # FIXED: Bulletproof move string/object translation checks
+            # BULLETPROOF: Check move validity using explicit is_legal mapping
             if best_move and board.is_legal(best_move):
                 callback(best_move.uci())
             else:
@@ -125,6 +124,7 @@ def stockfish_worker():
             callback(None)
         finally:
             engine_queue.task_done()
+
 
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
