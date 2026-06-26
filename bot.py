@@ -60,13 +60,15 @@ def stockfish_worker():
                 
     if not resolved_path:
         print("[CRITICAL] Could not locate Stockfish binary anywhere in the system path!")
-        return
-
-    try:
-        engine = chess.engine.SimpleEngine.popen_uci(resolved_path)
+    except Exception as e:
+        try:
+        # BYPASS: Import and execute popen_uci directly from the engine module
+        from chess.engine import popen_uci
+        engine = popen_uci(resolved_path)
+        
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
         print("[ENGINE] Stockfish is fully loaded and ready to accept match jobs.")
-    except Exception as e:
+
         print(f"[CRITICAL] Failed to start Stockfish engine instance: {e}")
         return
 
