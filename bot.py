@@ -80,18 +80,16 @@ def stockfish_worker():
                 
                 # 1. Safely check if a 2nd best line exists and roll the dice (35% chance)
                 if len(result) > 1 and dice_roll > 0.65:
-                    # result[1] is the dictionary for the 2nd best line
                     pv_list = result[1].get("pv", [])
-                    if pv_list:  # Ensure the list of moves isn't empty
-                        best_move = pv_list[0]  # Grab the very first chess.Move object
+                    if pv_list:  
+                        best_move = pv_list[0]  # FIXED: Target the first move item
                         print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
                 # 2. Fallback to the absolute best engine line if 2nd line fails or wasn't chosen
                 if not best_move:
-                    # Safely extract from result[0] without using a manual string key check
                     pv_list = result[0].get("pv", [])
                     if pv_list:
-                        best_move = pv_list[0]
+                        best_move = pv_list[0]  # FIXED: Target the first move item
 
             if best_move and best_move in board.legal_moves:
                 callback(best_move.uci())
@@ -155,15 +153,12 @@ def play_game(game_id):
                       (total_moves % 2 != 0 and bot_color == 'black')
 
         if is_bot_turn:
-            # Human-like delay, scaled down drastically for fast performance
             time.sleep(random.uniform(0.1, 0.4))
             
-            # Use an inline callback function to dispatch the calculated move instantly
             def handle_move_result(move_uci):
                 if move_uci:
                     make_lichess_move(game_id, move_uci)
 
-            # Offload heavy engine math to our background Stockfish worker thread
             engine_queue.put((game_id, moves_played, handle_move_result))
 
 def listen_to_events():
@@ -202,7 +197,6 @@ def listen_to_events():
             game_thread.start()
 
 if __name__ == "__main__":
-    # Start the single, shared local engine manager thread
     worker_thread = threading.Thread(target=stockfish_worker, daemon=True)
     worker_thread.start()
 
