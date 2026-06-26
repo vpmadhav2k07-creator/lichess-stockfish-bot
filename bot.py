@@ -64,14 +64,14 @@ def stockfish_worker():
 
     try:
         engine = chess.engine.SimpleEngine.Popen(resolved_path)
-        # Force lower threads and high speed configuration
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
-        print("[ENGINE] Stockfish is fully loaded and configured for lightning-speed mode.")
+        print("[ENGINE] Stockfish is fully loaded and ready to accept match jobs.")
     except Exception as e:
         print(f"[CRITICAL] Failed to start Stockfish engine instance: {e}")
         return
 
     while True:
+        # Fetch calculation task from the queue
         game_id, moves_list, callback = engine_queue.get()
         try:
             board = chess.Board()
@@ -86,18 +86,14 @@ def stockfish_worker():
                 engine_queue.task_done()
                 continue
 
-            # ULTRA FAST LIMIT: Force calculation to stop after 0.05 seconds or 25,000 nodes
-            # This leaves plenty of buffer room for API network latency to keep moves under 1 second.
-            result = engine.analyse(
-                board, 
-                chess.engine.Limit(time=0.05, nodes=25000), 
-                multipv=2
-            )
+            # Limit evaluation to 0.1 seconds for maximum speed
+            result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
 
             best_move = None
             if isinstance(result, list) and len(result) > 0:
                 dice_roll = random.random()
                 
+                # 1. Safely check if a 2nd best line exists and roll the dice (35% chance)
                 if len(result) > 1 and dice_roll > 0.65:
                     info_dict = result[1]
                     if isinstance(info_dict, dict):
@@ -107,17 +103,17 @@ def stockfish_worker():
                             print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
                 # 2. Fallback to the absolute best engine line if 2nd line fails or wasn't chosen
-if not best_move:
-    info_dict = result[0]
-    if isinstance(info_dict, dict):
-        pv_list = info_dict.get("pv", [])
-        if pv_list:
-            best_move = pv_list[0]
-
+                if not best_move:
+                    info_dict = result[0]
+                    if isinstance(info_dict, dict):
+                        pv_list = info_dict.get("pv", [])
+                        if pv_list:
+                            best_move = pv_list[0]
 
             if best_move and best_move in board.legal_moves:
                 callback(best_move.uci())
             else:
+                # Absolute panic fallback
                 legal_moves = list(board.legal_moves)
                 callback(random.choice(legal_moves).uci() if legal_moves else None)
 
@@ -126,6 +122,7 @@ if not best_move:
             callback(None)
         finally:
             engine_queue.task_done()
+ 
 
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
