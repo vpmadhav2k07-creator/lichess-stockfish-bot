@@ -41,7 +41,6 @@ def make_lichess_move(game_id, move_str):
             print(f"[{game_id}] Move failed ({response.status_code}): {response.text}")
     except Exception as e:
         print(f"[{game_id}] Error posting move: {e}")
-
 def stockfish_worker():
     """Dedicated background thread handling all Stockfish calculations sequentially."""
     print("[ENGINE] Initializing local Stockfish engine instance...")
@@ -87,35 +86,21 @@ def stockfish_worker():
                 engine_queue.task_done()
                 continue
 
-            best_move = None
-            
-            # Request multi-pv analysis safely
-            result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
-
-            if isinstance(result, list) and len(result) > 0:
-                dice_roll = random.random()
-                
-                # 1. 35% chance to play the 2nd best move option if it exists
-                if len(result) > 1 and dice_roll > 0.65:
-                    info_dict = result[1] # FIXED: Pull the dictionary from the 2nd index
-                    if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
-                        best_move = info_dict["pv"][0] # FIXED: Extract the first Move object
-                        print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
-                
-                # 2. Fallback to top choice if 2nd option wasn't chosen or didn't exist
-                if not best_move:
-                    info_dict = result[0] # FIXED: Pull the dictionary from the 1st index
-                    if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
-                        best_move = info_dict["pv"][0] # FIXED: Extract the first Move object
+            # ULTRA-RELIABLE: Use engine.play directly for fast, error-free move generation
+            result = engine.play(board, chess.engine.Limit(time=0.1))
+            best_move = result.move
 
             # BULLETPROOF: Check move validity using explicit is_legal mapping
             if best_move and board.is_legal(best_move):
+                print(f"[{game_id}] Engine generated valid move: {best_move.uci()}")
                 callback(best_move.uci())
             else:
                 # Safe panic fallback
                 legal_moves = list(board.legal_moves)
                 if legal_moves:
-                    callback(random.choice(legal_moves).uci())
+                    fallback_move = random.choice(legal_moves).uci()
+                    print(f"[{game_id}] Panic fallback triggered. Selected move: {fallback_move}")
+                    callback(fallback_move)
                 else:
                     callback(None)
 
@@ -151,9 +136,19 @@ def play_game(game_id):
 
         event_type = game_event.get('type')
         if event_type == 'gameFull':
-            white_id = game_event['white'].get('id', '').lower()
-            bot_color = 'white' if white_id == BOT_USERNAME.lower() else 'black'
+            # HARDENED: Robust multi-layer extraction tracking for bot username checks
+            white_player = game_event.get('white', {})
+            white_id = white_player.get('id', '') if isinstance(white_player, dict) else ''
+            
+            # Case-insensitive validation against config variable definition 
+            if white_id.lower() == BOT_USERNAME.lower():
+                bot_color = 'white'
+            else:
+                bot_color = 'black'
+                
             state = game_event['state']
+            print(f"[{game_id}] Match configuration locked. Bot Color side: {bot_color.upper()}")
+            
         elif event_type == 'gameState':
             state = game_event
         else:
@@ -175,11 +170,13 @@ def play_game(game_id):
                       (total_moves % 2 != 0 and bot_color == 'black')
 
         if is_bot_turn:
+            print(f"[{game_id}] Bot turn detected (Move #{total_moves + 1}). Queueing engine evaluation...")
             def handle_move_result(move_uci):
                 if move_uci:
                     make_lichess_move(game_id, move_uci)
 
             engine_queue.put((game_id, moves_played, handle_move_result))
+
 
 def listen_to_events():
     """Listens to global challenges and game starts."""
