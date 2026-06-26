@@ -71,7 +71,6 @@ def stockfish_worker():
         return
 
     while True:
-        # Fetch calculation task from the queue
         game_id, moves_list, callback = engine_queue.get()
         try:
             board = chess.Board()
@@ -86,36 +85,37 @@ def stockfish_worker():
                 engine_queue.task_done()
                 continue
 
-            # Limit evaluation to 0.1 seconds for maximum speed
+            best_move = None
+            
+            # CORRECTED: Use engine.analyse with multipv safely
+            # python-chess returns a list of dicts when multipv > 1 is requested via analyse()
             result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
 
-            best_move = None
             if isinstance(result, list) and len(result) > 0:
                 dice_roll = random.random()
                 
-                # 1. Safely check if a 2nd best line exists and roll the dice (35% chance)
+                # 1. 35% chance to try to play the 2nd best move option if it exists
                 if len(result) > 1 and dice_roll > 0.65:
                     info_dict = result[1]
-                    if isinstance(info_dict, dict):
-                        pv_list = info_dict.get("pv", [])
-                        if pv_list:  
-                            best_move = pv_list[0]
-                            print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
+                    if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
+                        best_move = info_dict["pv"][0] # Extract the actual Move object
+                        print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
-                # 2. Fallback to the absolute best engine line if 2nd line fails or wasn't chosen
+                # 2. Fallback to top choice if 2nd option wasn't rolled or didn't exist
                 if not best_move:
                     info_dict = result[0]
-                    if isinstance(info_dict, dict):
-                        pv_list = info_dict.get("pv", [])
-                        if pv_list:
-                            best_move = pv_list[0]
+                    if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
+                        best_move = info_dict["pv"][0]
 
             if best_move and best_move in board.legal_moves:
                 callback(best_move.uci())
             else:
-                # Absolute panic fallback
+                # Safe panic fallback
                 legal_moves = list(board.legal_moves)
-                callback(random.choice(legal_moves).uci() if legal_moves else None)
+                if legal_moves:
+                    callback(random.choice(legal_moves).uci())
+                else:
+                    callback(None)
 
         except Exception as err:
             print(f"[{game_id}] Engine error during analysis: {err}")
@@ -173,7 +173,6 @@ def play_game(game_id):
                       (total_moves % 2 != 0 and bot_color == 'black')
 
         if is_bot_turn:
-            # FIX: Removed the random time.sleep(0.1, 0.4) delay so it reacts instantly
             def handle_move_result(move_uci):
                 if move_uci:
                     make_lichess_move(game_id, move_uci)
@@ -216,13 +215,12 @@ def listen_to_events():
             game_thread.start()
 
 if __name__ == "__main__":
-    # Start the single, shared local engine manager thread
-    worker_thread = threading.Thread(target=stockfish_worker, daemon=True)
+    # Start background engine processing thread
+    worker_thread = threading.Thread(target=stockfish_worker, name="StockfishWorkerThread")
+    worker_thread.daemon = True
     worker_thread.start()
-
-    while True:
-        try:
-            listen_to_events()
-        except Exception as e:
-            print(f"[CRITICAL] Connection dropped: {e}. Reconnecting in 5 seconds...")
-            time.sleep(5)
+    
+    try:
+        listen_to_events()
+    except KeyboardInterrupt:
+        print("\n[SHUTDOWN] Bot execution halted manually.")
