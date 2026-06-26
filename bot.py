@@ -51,7 +51,7 @@ def stockfish_worker():
     if resolved_path:
         print(f"[ENGINE] Successfully located Stockfish binary at: {resolved_path}")
     else:
-        possible_paths = ["/usr/games/stockfish", "/usr/bin/stockfish", "./stockfish"]
+        possible_paths = ["/usr/games/stockfish", "/usr/bin/stockfish", "./stockfish", "/usr/local/bin/stockfish"]
         for path in possible_paths:
             if os.path.exists(path):
                 resolved_path = path
@@ -60,15 +60,15 @@ def stockfish_worker():
                 
     if not resolved_path:
         print("[CRITICAL] Could not locate Stockfish binary anywhere in the system path!")
-    except Exception as e:
-        try:
-        # BYPASS: Import and execute popen_uci directly from the engine module
+        return
+
+    try:
+        # FIXED: Clean Direct engine process invocation to completely bypass class namespace errors
         from chess.engine import popen_uci
         engine = popen_uci(resolved_path)
-        
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
         print("[ENGINE] Stockfish is fully loaded and ready to accept match jobs.")
-
+    except Exception as e:
         print(f"[CRITICAL] Failed to start Stockfish engine instance: {e}")
         return
 
@@ -89,10 +89,10 @@ def stockfish_worker():
 
             best_move = None
             
-            # CORRECTED: Use engine.analyse with multipv safely
-            # python-chess returns a list of dicts when multipv > 1 is requested via analyse()
+            # Use engine.analyse with multipv safely
             result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
 
+            # FIXED: Corrected 16-space alignment for the evaluation block
             if isinstance(result, list) and len(result) > 0:
                 dice_roll = random.random()
                 
@@ -100,7 +100,7 @@ def stockfish_worker():
                 if len(result) > 1 and dice_roll > 0.65:
                     info_dict = result[1]
                     if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
-                        best_move = info_dict["pv"][0] # Extract the actual Move object
+                        best_move = info_dict["pv"][0]
                         print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
                 # 2. Fallback to top choice if 2nd option wasn't rolled or didn't exist
@@ -109,7 +109,8 @@ def stockfish_worker():
                     if isinstance(info_dict, dict) and "pv" in info_dict and info_dict["pv"]:
                         best_move = info_dict["pv"][0]
 
-            if best_move and best_move in board.legal_moves:
+                        # FIXED: Bulletproof move string/object translation checks
+            if best_move and board.is_legal(best_move):
                 callback(best_move.uci())
             else:
                 # Safe panic fallback
@@ -124,7 +125,6 @@ def stockfish_worker():
             callback(None)
         finally:
             engine_queue.task_done()
- 
 
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
@@ -217,7 +217,7 @@ def listen_to_events():
             game_thread.start()
 
 if __name__ == "__main__":
-    # Start background engine processing thread
+    # FIXED: Re-added missing complete worker initialization and event listener block
     worker_thread = threading.Thread(target=stockfish_worker, name="StockfishWorkerThread")
     worker_thread.daemon = True
     worker_thread.start()
