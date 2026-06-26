@@ -5,14 +5,13 @@ import os
 import random
 import time
 import queue
+import shutil
 import chess
 import chess.engine
 
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("LICHESS_TOKEN", "YOUR_SECRET_TOKEN_HERE")
 BOT_USERNAME = "Studyloversz-bot"
-# Update this to the exact path of your local Stockfish binary
-STOCKFISH_PATH = "/usr/games/stockfish"  # or "stockfish.exe" on Windows
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
@@ -46,16 +45,33 @@ def make_lichess_move(game_id, move_str):
 def stockfish_worker():
     """Dedicated background thread handling all Stockfish calculations sequentially."""
     print("[ENGINE] Initializing local Stockfish engine instance...")
+    
+    resolved_path = shutil.which("stockfish")
+    
+    if resolved_path:
+        print(f"[ENGINE] Successfully located Stockfish binary at: {resolved_path}")
+    else:
+        possible_paths = ["/usr/games/stockfish", "/usr/bin/stockfish", "./stockfish"]
+        for path in possible_paths:
+            if os.path.exists(path):
+                resolved_path = path
+                print(f"[ENGINE] Fallback found Stockfish binary at: {resolved_path}")
+                break
+                
+    if not resolved_path:
+        print("[CRITICAL] Could not locate Stockfish binary anywhere in the system path!")
+        return
+
     try:
-        engine = chess.engine.SimpleEngine.Popen(STOCKFISH_PATH)
-        # Configure engine behavior for a strong ~2300 Elo playstyle
+        engine = chess.engine.SimpleEngine.Popen(resolved_path)
+        # Force lower threads and high speed configuration
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
+        print("[ENGINE] Stockfish is fully loaded and configured for lightning-speed mode.")
     except Exception as e:
-        print(f"[CRITICAL] Failed to start Stockfish binary: {e}")
+        print(f"[CRITICAL] Failed to start Stockfish engine instance: {e}")
         return
 
     while True:
-        # Fetch calculation task from the queue
         game_id, moves_list, callback = engine_queue.get()
         try:
             board = chess.Board()
@@ -70,31 +86,38 @@ def stockfish_worker():
                 engine_queue.task_done()
                 continue
 
-            # Limit evaluation to 0.1 seconds for maximum speed
-            # Multipv=2 evaluates the top 2 best lines simultaneously
-            result = engine.analyse(board, chess.engine.Limit(time=0.1), multipv=2)
+            # ULTRA FAST LIMIT: Force calculation to stop after 0.05 seconds or 25,000 nodes
+            # This leaves plenty of buffer room for API network latency to keep moves under 1 second.
+            result = engine.analyse(
+                board, 
+                chess.engine.Limit(time=0.05, nodes=25000), 
+                multipv=2
+            )
 
             best_move = None
             if isinstance(result, list) and len(result) > 0:
                 dice_roll = random.random()
                 
-                # 1. Safely check if a 2nd best line exists and roll the dice (35% chance)
                 if len(result) > 1 and dice_roll > 0.65:
-                    pv_list = result[1].get("pv", [])
-                    if pv_list:  
-                        best_move = pv_list[0]  # FIXED: Target the first move item
-                        print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
+                    info_dict = result[1]
+                    if isinstance(info_dict, dict):
+                        pv_list = info_dict.get("pv", [])
+                        if pv_list:  
+                            best_move = pv_list[0]
+                            print(f"[{game_id}] Selection: Alternated to 2nd best move option.")
                 
                 # 2. Fallback to the absolute best engine line if 2nd line fails or wasn't chosen
-                if not best_move:
-                    pv_list = result[0].get("pv", [])
-                    if pv_list:
-                        best_move = pv_list[0]  # FIXED: Target the first move item
+if not best_move:
+    info_dict = result[0]
+    if isinstance(info_dict, dict):
+        pv_list = info_dict.get("pv", [])
+        if pv_list:
+            best_move = pv_list[0]
+
 
             if best_move and best_move in board.legal_moves:
                 callback(best_move.uci())
             else:
-                # Absolute panic fallback
                 legal_moves = list(board.legal_moves)
                 callback(random.choice(legal_moves).uci() if legal_moves else None)
 
@@ -143,7 +166,7 @@ def play_game(game_id):
             break
 
         if event_type == 'gameFull' and not sent_welcome:
-            send_chat_message(game_id, "player", "Hello! Upgraded engine active (~2300 Elo). Good luck!")
+            send_chat_message(game_id, "player", "Hello! Fast Engine Mode active. Good luck!")
             sent_welcome = True
 
         moves_played = state['moves'].strip().split() if state['moves'].strip() else []
@@ -153,8 +176,7 @@ def play_game(game_id):
                       (total_moves % 2 != 0 and bot_color == 'black')
 
         if is_bot_turn:
-            time.sleep(random.uniform(0.1, 0.4))
-            
+            # FIX: Removed the random time.sleep(0.1, 0.4) delay so it reacts instantly
             def handle_move_result(move_uci):
                 if move_uci:
                     make_lichess_move(game_id, move_uci)
@@ -197,12 +219,13 @@ def listen_to_events():
             game_thread.start()
 
 if __name__ == "__main__":
+    # Start the single, shared local engine manager thread
     worker_thread = threading.Thread(target=stockfish_worker, daemon=True)
     worker_thread.start()
 
     while True:
         try:
             listen_to_events()
-        except Exception as global_err:
-            print(f"Network stream disconnected: {global_err}. Reconnecting in 10 seconds...")
-            time.sleep(10)
+        except Exception as e:
+            print(f"[CRITICAL] Connection dropped: {e}. Reconnecting in 5 seconds...")
+            time.sleep(5)
