@@ -1,2 +1,3 @@
-requests
-python-chess
+requests==2.32.3
+python-chess==1.10.0
+chess==1.10.0
