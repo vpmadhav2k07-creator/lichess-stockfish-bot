@@ -236,11 +236,10 @@ def listen_to_events():
             game_thread.start()
 
 if __name__ == "__main__":
-    # FIXED: Re-added missing complete worker initialization and event listener block
-    worker_thread = threading.Thread(target=stockfish_worker, name="StockfishWorkerThread")
-    worker_thread.daemon = True
+    # Start the engine worker background thread
+    worker_thread = threading.Thread(target=stockfish_worker, daemon=True)
     worker_thread.start()
-    
+    # Start the event listener loop
     try:
         listen_to_events()
     except KeyboardInterrupt:
