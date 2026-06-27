@@ -110,11 +110,10 @@ def stockfish_worker():
         finally:
             engine_queue.task_done()
 
-
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
     print(f"\n[GAME START] Thread spawned for game: {game_id}")
-    url = f"https://lichess.org/api/bot/game/stream/{game_id}"
+    url = f"https://lichess.org{game_id}"
     
     try:
         response = requests.get(url, headers=HEADERS, stream=True, timeout=15)
@@ -135,12 +134,12 @@ def play_game(game_id):
             continue
 
         event_type = game_event.get('type')
+        
+        # FIX: Correctly extracts bot color from full game payload
         if event_type == 'gameFull':
-            # HARDENED: Robust multi-layer extraction tracking for bot username checks
             white_player = game_event.get('white', {})
             white_id = white_player.get('id', '') if isinstance(white_player, dict) else ''
             
-            # Case-insensitive validation against config variable definition 
             if white_id.lower() == BOT_USERNAME.lower():
                 bot_color = 'white'
             else:
@@ -151,6 +150,23 @@ def play_game(game_id):
             
         elif event_type == 'gameState':
             state = game_event
+            # FIX: Fallback structure if stream reconnects mid-game and misses 'gameFull'
+            if bot_color is None:
+                print(f"[{game_id}] Stream reconnected mid-game. Fetching match details...")
+                try:
+                    meta_url = f"https://lichess.org/api/stream/event/{game_id}"
+                    meta_resp = requests.get(meta_url, headers=HEADERS, stream=True, timeout=5)
+                    for meta_line in meta_resp.iter_lines():
+                        if meta_line:
+                            meta_event = json.loads(meta_line.decode('utf-8'))
+                            if meta_event.get('type') == 'gameFull':
+                                w_id = meta_event.get('white', {}).get('id', '')
+                                bot_color = 'white' if w_id.lower() == BOT_USERNAME.lower() else 'black'
+                                break
+                    meta_resp.close()
+                    print(f"[{game_id}] Recovered color profile: {bot_color.upper()}")
+                except Exception as ex:
+                    print(f"[{game_id}] Error recovering color profile: {ex}")
         else:
             continue
 
@@ -166,6 +182,11 @@ def play_game(game_id):
         moves_played = state['moves'].strip().split() if state['moves'].strip() else []
         total_moves = len(moves_played)
 
+        # FIX: Safeguard against executing turns when color is unknown
+        if bot_color is None:
+            print(f"[{game_id}] Warning: Skipping move check because bot color is unknown.")
+            continue
+
         is_bot_turn = (total_moves % 2 == 0 and bot_color == 'white') or \
                       (total_moves % 2 != 0 and bot_color == 'black')
 
@@ -176,6 +197,7 @@ def play_game(game_id):
                     make_lichess_move(game_id, move_uci)
 
             engine_queue.put((game_id, moves_played, handle_move_result))
+
 
 
 def listen_to_events():
@@ -223,3 +245,8 @@ if __name__ == "__main__":
         listen_to_events()
     except KeyboardInterrupt:
         print("\n[SHUTDOWN] Bot execution halted manually.")
+            except Exception as global_err:
+        print(f"[SYSTEM] Critical network or stream failure: {global_err}")
+    finally:
+        print("[SHUTDOWN] Clean exit completed.")
+
