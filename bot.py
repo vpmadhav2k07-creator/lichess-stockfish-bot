@@ -194,44 +194,57 @@ def play_game(game_id):
             engine_queue.put((game_id, moves_played, handle_move_result))
 
 def listen_to_events():
-    """Listens to global challenges and game starts."""
+    """Listens to global challenges and game starts with heavy diagnostic tracking."""
     print(f"Starting global event listener for user: {BOT_USERNAME}")
     url = "https://lichess.org/api/stream/event"
     
     while True:
         try:
             response = requests.get(url, headers=HEADERS, stream=True, timeout=None)
+            print("[SERVER] Stream connection successfully established with Lichess pipelines.")
+            
             for line in response.iter_lines():
                 if not line:
                     continue
                     
                 try:
                     event = json.loads(line.decode('utf-8'))
-                except Exception:
+                except Exception as parse_err:
+                    print(f"[STREAM ERROR] Failed to parse stream line data: {parse_err}")
                     continue
 
-                if event.get('type') == 'challenge':
-                    challenge_id = event['challenge']['id']
-                    variant = event['challenge']['variant']['key']
+                event_type = event.get('type')
+                print(f"[STREAM EVENT] Received incoming packet notification type: '{event_type}'")
+
+                if event_type == 'challenge':
+                    challenge_data = event['challenge']
+                    challenge_id = challenge_data['id']
+                    challenger_name = challenge_data.get('challenger', {}).get('id', 'Unknown')
+                    variant = challenge_data['variant']['key']
+                    is_rated = challenge_data.get('rated', False)
+                    
+                    print(f"[CHALLENGE RECEIVED] ID: {challenge_id} from user: @{challenger_name} | Variant: {variant} | Rated: {is_rated}")
                     
                     if variant != 'standard':
-                        print(f"[CHALLENGE] Declining variant '{variant}' for ID: {challenge_id}")
-                        requests.post(f"https://lichess.org/api/challenge/decline{challenge_id}/decline", headers=HEADERS, timeout=5)
+                        print(f"[CHALLENGE DECLINED] Reason: Variant '{variant}' is not supported. Sending rejection request...")
+                        requests.post(f"https://lichess.org/api/challenge/{challenge_id}/decline", headers=HEADERS, json={"reason": "variant"}, timeout=5)
                         continue
 
-                    print(f"[CHALLENGE] Auto-accepting ID: {challenge_id}")
-                    accept_url = f"https://lichess.org/api/challenge/accept{challenge_id}/accept"
-                    requests.post(accept_url, headers=HEADERS, timeout=5)
+                    print(f"[CHALLENGE ACCEPTED] Standard conditions valid. Processing accept call to ID: {challenge_id}...")
+                    accept_url = f"https://lichess.org/api/challenge/{challenge_id}/accept"
+                    accept_res = requests.post(accept_url, headers=HEADERS, timeout=5)
+                    print(f"[CHALLENGE RESPONSE] Lichess server accept action status code: {accept_res.status_code}")
 
-                elif event.get('type') == 'gameStart':
+                elif event_type == 'gameStart':
                     game_id = event['game']['id']  
+                    print(f"[MATCH INITIALIZED] Spawning independent execution thread for game ID: {game_id}")
                     game_thread = threading.Thread(target=play_game, args=(game_id,))
                     game_thread.daemon = True
                     game_thread.start()
                     
         except Exception as global_err:
-            print(f"[SYSTEM] Critical network or stream failure: {global_err}")
-            print("[SYSTEM] Reconnecting to Lichess event stream in 5 seconds...")
+            print(f"[SYSTEM CRITICAL] Network or stream infrastructure drop: {global_err}")
+            print("[SYSTEM] Attempting automatic connection reconstruction in 5 seconds...")
             time.sleep(5)
 
 if __name__ == "__main__":
