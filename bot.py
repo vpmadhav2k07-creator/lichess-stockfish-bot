@@ -63,8 +63,8 @@ def stockfish_worker():
         return
 
     try:
-        from chess.engine import popen_uci
-        engine = popen_uci(resolved_path)
+        # FIXED: Using the synchronous SimpleEngine wrapper instead of the raw async coroutine
+        engine = chess.engine.SimpleEngine.popen_uci(resolved_path)
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
         print("[ENGINE] Stockfish is fully loaded and ready to accept match jobs.")
     except Exception as e:
