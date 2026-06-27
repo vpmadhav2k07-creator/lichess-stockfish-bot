@@ -113,7 +113,7 @@ def stockfish_worker():
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
     print(f"\n[GAME START] Thread spawned for game: {game_id}")
-    url = f"https://lichess.org{game_id}"
+    url = f"https://lichess.org/api/bot/game/stream/{game_id}"
     
     try:
         response = requests.get(url, headers=HEADERS, stream=True, timeout=15)
