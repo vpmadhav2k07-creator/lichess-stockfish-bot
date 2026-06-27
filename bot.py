@@ -41,6 +41,7 @@ def make_lichess_move(game_id, move_str):
             print(f"[{game_id}] Move failed ({response.status_code}): {response.text}")
     except Exception as e:
         print(f"[{game_id}] Error posting move: {e}")
+
 def stockfish_worker():
     """Dedicated background thread handling all Stockfish calculations sequentially."""
     print("[ENGINE] Initializing local Stockfish engine instance...")
@@ -62,7 +63,6 @@ def stockfish_worker():
         return
 
     try:
-        # BYPASS: Directly import and use popen_uci to avoid environment namespace errors
         from chess.engine import popen_uci
         engine = popen_uci(resolved_path)
         engine.configure({"Skill Level": 20, "Hash": 64, "Threads": 1})
@@ -86,16 +86,13 @@ def stockfish_worker():
                 engine_queue.task_done()
                 continue
 
-            # ULTRA-RELIABLE: Use engine.play directly for fast, error-free move generation
             result = engine.play(board, chess.engine.Limit(time=0.1))
             best_move = result.move
 
-            # BULLETPROOF: Check move validity using explicit is_legal mapping
             if best_move and board.is_legal(best_move):
                 print(f"[{game_id}] Engine generated valid move: {best_move.uci()}")
                 callback(best_move.uci())
             else:
-                # Safe panic fallback
                 legal_moves = list(board.legal_moves)
                 if legal_moves:
                     fallback_move = random.choice(legal_moves).uci()
@@ -113,10 +110,10 @@ def stockfish_worker():
 def play_game(game_id):
     """Streams individual match events. Breaks loop when game ends."""
     print(f"\n[GAME START] Thread spawned for game: {game_id}")
-    url = f"https://lichess.org/api/bot/game/stream/{game_id}"
+    url = f"https://lichess.org/api/bot/game/move{game_id}"
     
     try:
-        response = requests.get(url, headers=HEADERS, stream=True, timeout=15)
+        response = requests.get(url, headers=HEADERS, stream=True, timeout=None)
     except Exception as e:
         print(f"[{game_id}] Stream connection failed: {e}")
         return
@@ -135,7 +132,6 @@ def play_game(game_id):
 
         event_type = game_event.get('type')
         
-        # FIX: Correctly extracts bot color from full game payload
         if event_type == 'gameFull':
             white_player = game_event.get('white', {})
             white_id = white_player.get('id', '') if isinstance(white_player, dict) else ''
@@ -150,21 +146,21 @@ def play_game(game_id):
             
         elif event_type == 'gameState':
             state = game_event
-            # FIX: Fallback structure if stream reconnects mid-game and misses 'gameFull'
+            # FIXED FALLBACK: Fetches single JSON data securely via the standard export endpoint
             if bot_color is None:
-                print(f"[{game_id}] Stream reconnected mid-game. Fetching match details...")
+                print(f"[{game_id}] Stream reconnected mid-game. Fetching true match details...")
                 try:
-                    meta_url = f"https://lichess.org/api/stream/event/{game_id}"
-                    meta_resp = requests.get(meta_url, headers=HEADERS, stream=True, timeout=5)
-                    for meta_line in meta_resp.iter_lines():
-                        if meta_line:
-                            meta_event = json.loads(meta_line.decode('utf-8'))
-                            if meta_event.get('type') == 'gameFull':
-                                w_id = meta_event.get('white', {}).get('id', '')
-                                bot_color = 'white' if w_id.lower() == BOT_USERNAME.lower() else 'black'
-                                break
-                    meta_resp.close()
-                    print(f"[{game_id}] Recovered color profile: {bot_color.upper()}")
+                    export_url = f"https://lichess.org{game_id}"
+                    export_headers = {**HEADERS, "Accept": "application/json"}
+                    meta_resp = requests.get(export_url, headers=export_headers, timeout=5)
+                    
+                    if meta_resp.status_code == 200:
+                        meta_data = meta_resp.json()
+                        w_id = meta_data.get('players', {}).get('white', {}).get('user', {}).get('id', '')
+                        bot_color = 'white' if w_id.lower() == BOT_USERNAME.lower() else 'black'
+                        print(f"[{game_id}] Recovered color profile safely: {bot_color.upper()}")
+                    else:
+                        print(f"[{game_id}] Export API returned status code: {meta_resp.status_code}")
                 except Exception as ex:
                     print(f"[{game_id}] Error recovering color profile: {ex}")
         else:
@@ -182,7 +178,6 @@ def play_game(game_id):
         moves_played = state['moves'].strip().split() if state['moves'].strip() else []
         total_moves = len(moves_played)
 
-        # FIX: Safeguard against executing turns when color is unknown
         if bot_color is None:
             print(f"[{game_id}] Warning: Skipping move check because bot color is unknown.")
             continue
@@ -198,54 +193,56 @@ def play_game(game_id):
 
             engine_queue.put((game_id, moves_played, handle_move_result))
 
-
-
 def listen_to_events():
     """Listens to global challenges and game starts."""
     print(f"Starting global event listener for user: {BOT_USERNAME}")
     url = "https://lichess.org/api/stream/event"
     
-    response = requests.get(url, headers=HEADERS, stream=True, timeout=60)
-    
-    for line in response.iter_lines():
-        if not line:
-            continue
-            
+    while True:
         try:
-            event = json.loads(line.decode('utf-8'))
-        except Exception:
-            continue
+            response = requests.get(url, headers=HEADERS, stream=True, timeout=None)
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                    
+                try:
+                    event = json.loads(line.decode('utf-8'))
+                except Exception:
+                    continue
 
-        if event.get('type') == 'challenge':
-            challenge_id = event['challenge']['id']
-            variant = event['challenge']['variant']['key']
-            
-            if variant != 'standard':
-                print(f"[CHALLENGE] Declining variant '{variant}' for ID: {challenge_id}")
-                requests.post(f"https://lichess.org/api/challenge/{challenge_id}/decline", headers=HEADERS, timeout=5)
-                continue
+                if event.get('type') == 'challenge':
+                    challenge_id = event['challenge']['id']
+                    variant = event['challenge']['variant']['key']
+                    
+                    if variant != 'standard':
+                        print(f"[CHALLENGE] Declining variant '{variant}' for ID: {challenge_id}")
+                        requests.post(f"https://lichess.org/api/challenge/decline{challenge_id}/decline", headers=HEADERS, timeout=5)
+                        continue
 
-            print(f"[CHALLENGE] Auto-accepting ID: {challenge_id}")
-            accept_url = f"https://lichess.org/api/challenge/{challenge_id}/accept"
-            requests.post(accept_url, headers=HEADERS, timeout=5)
+                    print(f"[CHALLENGE] Auto-accepting ID: {challenge_id}")
+                    accept_url = f"https://lichess.org/api/challenge/accept{challenge_id}/accept"
+                    requests.post(accept_url, headers=HEADERS, timeout=5)
 
-        elif event.get('type') == 'gameStart':
-            game_id = event['game']['gameId']  
-            game_thread = threading.Thread(target=play_game, args=(game_id,))
-            game_thread.daemon = True
-            game_thread.start()
+                elif event.get('type') == 'gameStart':
+                    game_id = event['game']['id']  
+                    game_thread = threading.Thread(target=play_game, args=(game_id,))
+                    game_thread.daemon = True
+                    game_thread.start()
+                    
+        except Exception as global_err:
+            print(f"[SYSTEM] Critical network or stream failure: {global_err}")
+            print("[SYSTEM] Reconnecting to Lichess event stream in 5 seconds...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     # Start the engine worker background thread
     worker_thread = threading.Thread(target=stockfish_worker, daemon=True)
     worker_thread.start()
-    # Start the event listener loop
+    
+    # Start the event listener loop safely
     try:
         listen_to_events()
     except KeyboardInterrupt:
         print("\n[SHUTDOWN] Bot execution halted manually.")
-            except Exception as global_err:
-        print(f"[SYSTEM] Critical network or stream failure: {global_err}")
     finally:
         print("[SHUTDOWN] Clean exit completed.")
-
